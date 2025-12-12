@@ -1,0 +1,8 @@
+src/beautiful_photo/__pycache__/*
+src/beautiful_photo.egg-info/*
+
+.venv/
+
+.vscode/
+
+uv.lock
