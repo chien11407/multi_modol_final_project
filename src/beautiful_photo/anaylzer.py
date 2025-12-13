@@ -125,9 +125,9 @@ class SignalProcessingAnalyzer:
             
         return total_response
 
+
     # ==========================================================
-    # 主流程分析
-    # ==========================================================
+    # 痘痘 mask
     def detect_blemishes(self, yuv_img):
         """
         數學原理：形態學頂帽運算 (Top-Hat Transform)
@@ -138,7 +138,7 @@ class SignalProcessingAnalyzer:
         
         # 1. 取出 Cr 通道 (紅色色差)
         # 痘痘在 Cr 通道通常數值較高 (偏紅)
-        cr = yuv_img[:, :, 2]
+        cr = yuv_img[:, :, 2].astype(np.float32)
         
         # 2. 定義結構元素的大小 (Kernel Size)
         # 假設痘痘半徑約 4-6 像素
@@ -157,39 +157,39 @@ class SignalProcessingAnalyzer:
         threshold = 5.0 
         blemish_mask = top_hat > threshold
         
-        return blemish_mask
-
-    def analyze_pipeline(self, image_path):
-        # 1. 讀取與光照處理
-        img_pil = Image.open(image_path).resize((400, 400))
-        img_arr = np.array(img_pil, dtype=np.float32)
-        yuv = self.rgb2yuv(img_arr)
-        # ... (YUV 增強邏輯) ...
-        Y_eq = yuv[:,:,0] # 假設這是增強後的 Y
+        # ---------------------------------------------------
+        # B. 找出「嘴唇區域」 (大片紅色)
+        # ---------------------------------------------------
+        # 統計全圖紅色分佈
+        mean_cr = np.mean(cr)
+        std_cr = np.std(cr)
         
-        # 2. 邊緣與紋理 (略)
-        edges = self.sobel_gradients(Y_eq)
-        features = self.gabor_filter_bank(Y_eq)
+        # 找出所有紅色的地方
+        red_areas = cr > (mean_cr + 0.6 * std_cr) # 0.6 是經驗值
         
-        # --- [重點] 加入瑕疵偵測 ---
-        # 使用原始的 YUV (未經直方圖等化，保留原始色差)
-        blemish_mask = self.detect_blemishes(yuv)
+        # [核心數學] 形態學開運算 (Opening)
+        # 使用一個 "巨大" 的結構元素 (10x20)，比痘痘大很多
+        # 只有像嘴唇這種大面積的紅色能撐過這個運算，小痘痘會消失
+        large_structure = np.ones((10, 20))
+        lip_zone = ndimage.binary_opening(red_areas, structure=large_structure)
         
-        # --- 綜合分析 ---
-        mask_edge = edges > 0.15
-        mask_feat = features > 0.1
+        # 稍微膨脹嘴唇區域，確保嘴角周圍也被涵蓋
+        lip_zone = ndimage.binary_dilation(lip_zone, structure=np.ones((5,5)))
         
-        # 保護區 = (五官 OR 邊緣)
-        protection_mask = np.logical_or(mask_edge, mask_feat)
+        # ---------------------------------------------------
+        # C. 排除嘴唇 (Subtraction)
+        # ---------------------------------------------------
+        # 真痘痘 = 初步紅點 AND (NOT 嘴唇區域)
+        true_acne_mask = np.logical_and(blemish_mask, ~lip_zone)
         
-        # 最終邏輯：
-        # 如果某個點原本被認為是特徵(例如很紅)，但它同時也是痘痘(blemish)，
-        # 那我們就「取消保護」，強迫它進入磨皮/修復流程。
-        final_protect_mask = np.logical_and(protection_mask, ~blemish_mask)
+        # 最後對真痘痘做一點點膨脹，確保覆蓋完整
+        true_acne_mask = ndimage.binary_dilation(true_acne_mask, structure=np.ones((3,3)))
         
-        # 回傳兩個 Mask
-        return final_protect_mask, blemish_mask
+        return true_acne_mask
     
+    # ==========================================================
+    # 主流程分析
+    # ==========================================================    
     def analyze_pipeline(self, image_path):
         # 0. 讀檔
         img_pil = Image.open(image_path).resize((400, 400))
@@ -227,7 +227,7 @@ class SignalProcessingAnalyzer:
         cr_channel = yuv[:, :, 2] 
         mean_cr = np.mean(cr_channel)
         std_cr = np.std(cr_channel)
-         # 定義：比平均紅度高出 1.2 倍標準差的區域 = 痘痘/紅斑
+        # 定義：比平均紅度高出 1.2 倍標準差的區域 = 痘痘/紅斑
         # 這個 1.2 可以微調 (越小抓越多痘痘)
         is_acne = cr_channel > (mean_cr + 1.2 * std_cr)
         
@@ -236,6 +236,11 @@ class SignalProcessingAnalyzer:
         # 這樣五官還是白的，但臉頰上的紅痘痘會變成黑的 (可磨皮)
         refined_mask = np.logical_and(protection_mask, ~is_acne)
         
+         # 數學原理：痘痘像素總數 / 圖片總像素數
+        acne_score = np.sum(blemish_mask) / blemish_mask.size
+        
+        print(f"--- 分析報告 ---")
+        print(f"痘痘分數: {acne_score:.5f} (門檻建議 0.002)")
         # 4. 遮罩形態學優化 (Morphological Smoothing)
         # 目的：去除遮罩上的雜訊噪點，並讓邊緣柔和
         
@@ -248,5 +253,6 @@ class SignalProcessingAnalyzer:
         # 讓遮罩從 0/1 的二值變成 0.0~1.0 的灰階
         # sigma=2.0 代表羽化邊緣的寬度
         final_protect_mask = ndimage.gaussian_filter(mask_closed.astype(np.float32), sigma=2.0)
-        
-        return final_protect_mask, blemish_mask
+               
+        # 3. 回傳三個值：保護遮罩、痘痘遮罩、分數
+        return final_protect_mask, blemish_mask, acne_score

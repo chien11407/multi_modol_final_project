@@ -6,22 +6,41 @@ from beautiful_photo import SignalProcessingAnalyzer, MathGuidedFilter
 
 # main.py
 def main():
-    image_path = "./image.png"
+    image_path = "./image_1.png"
     
     analyzer = SignalProcessingAnalyzer()
     filter_tool = MathGuidedFilter()
 
     # 1. 分析 (取得兩個 mask)
-    protect_mask, blemish_mask = analyzer.analyze_pipeline(image_path)
+    protect_mask, acne_mask, score = analyzer.analyze_pipeline(image_path)
     
     # 2. 處理 (傳入兩個 mask)
-    result = filter_tool.process_image(
-        image_path, 
-        mask=protect_mask, 
-        blemish_mask=blemish_mask, # 傳入痘痘遮罩
-        r=25, 
-        eps=0.02
-    )
+    # 2. 設定判斷門檻 (0.2%)
+    # 如果分數 > 0.002，代表滿臉痘痘，需要重手處理
+    THRESHOLD = 0.01
+    
+    if score < THRESHOLD:
+        print(">> 診斷：膚況不錯 (輕量模式)")
+        # 輕量模式：acne_mask 傳入 None -> 不會跑中值濾波修復
+        # 參數 r=15, eps=0.05 -> 保留較多皮膚質感
+        result = filter_tool.process_image(
+            image_path, 
+            mask=protect_mask, 
+            blemish_mask=None,    # <--- 關鍵：設為 None
+            r=15, 
+            eps=0.05
+        )
+    else:
+        print(">> 診斷：瑕疵較多 (強力模式)")
+        # 強力模式：acne_mask 傳入真的遮罩 -> 啟動中值濾波修復
+        # 參數 r=25, eps=0.15 -> 磨得比較平，消除紅斑
+        result = filter_tool.process_image(
+            image_path, 
+            mask=protect_mask, 
+            blemish_mask=acne_mask, # <--- 關鍵：傳入遮罩
+            r=25, 
+            eps=0.1
+        )
     
     show_comparison(image_path, result, protect_mask)
     
