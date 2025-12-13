@@ -1,5 +1,5 @@
 src/beautiful_photo/__pycache__/*
-src/beautiful_photo.egg-info/*
+src/beautiful_photo.egg-info/
 
 .venv/
 
