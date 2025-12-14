@@ -1,7 +1,6 @@
 from PIL import Image
 import matplotlib.pyplot as plt
 
-# 引用你寫好的模組
 from beautiful_photo import SignalProcessingAnalyzer, MathGuidedFilter
 
 # main.py
@@ -17,7 +16,7 @@ def main():
     # 2. 處理 (傳入兩個 mask)
     # 2. 設定判斷門檻 (0.2%)
     # 如果分數 > 0.002，代表滿臉痘痘，需要重手處理
-    THRESHOLD = 0.01
+    THRESHOLD = 0.06
     
     if score < THRESHOLD:
         print(">> 診斷：膚況不錯 (輕量模式)")
@@ -26,7 +25,7 @@ def main():
         result = filter_tool.process_image(
             image_path, 
             mask=protect_mask, 
-            blemish_mask=None,    # <--- 關鍵：設為 None
+            blemish_mask=None,
             r=15, 
             eps=0.05
         )
@@ -38,8 +37,8 @@ def main():
             image_path, 
             mask=protect_mask, 
             blemish_mask=acne_mask, # <--- 關鍵：傳入遮罩
-            r=25, 
-            eps=0.1
+            r=20, 
+            eps=0.15
         )
     
     show_comparison(image_path, result, protect_mask)

@@ -99,7 +99,7 @@ class MathGuidedFilter:
         w, h = img_pil.size
         img_arr = np.array(img_pil, dtype=np.float32) / 255.0
         
-        # --- [新增] 步驟 0: 痘痘修復 (Blemish Inpainting) ---
+        # --- 步驟 0: 痘痘修復 (Blemish Inpainting) ---
         # 原理：利用積分圖計算局部平均，用「鄰域平均色」取代「痘痘色」
         if blemish_mask is not None:
             print("正在修復皮膚瑕疵 (使用積分圖 Box Filter)...")
@@ -115,8 +115,7 @@ class MathGuidedFilter:
             # 半徑設為 5~8，足夠抹平痘痘即可
             inpainting_layer = np.zeros_like(img_arr)
             for i in range(3):
-                # 利用既有的數學函式，不需 cv2
-                inpainting_layer[:, :, i] = self.box_filter_fast(img_arr[:, :, i], r=8)
+                inpainting_layer[:, :, i] = self.box_filter_fast(img_arr[:, :, i], r=10)
 
             # C. 替換像素
             # 如果是痘痘位置 (b_mask_arr 為 True)，就用模糊層的顏色取代原圖顏色
@@ -130,7 +129,7 @@ class MathGuidedFilter:
             # 執行替換
             img_arr = np.where(b_mask_3ch, inpainting_layer, img_arr)
 
-        # --- 接下來繼續做原本的導向濾波 (磨皮) ---
+        # --- 接下來繼續做導向濾波 (磨皮) ---
         smoothed = np.zeros_like(img_arr)
         for i in range(3):
             I_channel = img_arr[:, :, i]

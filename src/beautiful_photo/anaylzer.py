@@ -127,65 +127,163 @@ class SignalProcessingAnalyzer:
 
 
     # ==========================================================
-    # 痘痘 mask
+    # 改進的痘痘偵測：先檢測臉部，再檢測痘痘
+    # ==========================================================
     def detect_blemishes(self, yuv_img):
         """
-        數學原理：形態學頂帽運算 (Top-Hat Transform)
-        公式：TopHat(f) = f - Open(f)
-             Open(f) = Dilate(Erode(f))  (先腐蝕再膨脹)
-        """
-        print("正在偵測皮膚瑕疵 (使用 SciPy 形態學)...")
+        改進的痘痘檢測方法 - 先限定臉部區域
         
-        # 1. 取出 Cr 通道 (紅色色差)
-        # 痘痘在 Cr 通道通常數值較高 (偏紅)
+        核心邏輯：
+        1. 先檢測臉部區域（膚色檢測 + 最大連通域）
+        2. 在臉部內檢測紅點（發炎痘痘）
+        3. 排除五官邊界（梯度膨脹）
+        """
+        print("正在偵測痘痘 (先檢測臉部版)...")
+        
+        h, w = yuv_img.shape[:2]
+        y_channel = yuv_img[:, :, 0].astype(np.float32)
+        cb = yuv_img[:, :, 1].astype(np.float32)
         cr = yuv_img[:, :, 2].astype(np.float32)
         
-        # 2. 定義結構元素的大小 (Kernel Size)
-        # 假設痘痘半徑約 4-6 像素
-        structure_size = 10
+        # ============ Step 0: 臉部區域檢測（膚色檢測）============
+        # 原理：人類皮膚在 YUV 空間有特定的 Cb/Cr 範圍
+        # Cb (藍色差)：通常在 80-130
+        # Cr (紅色差)：通常在 130-180
         
-        # 3. 執行「灰階開運算 (Grayscale Opening)」
-        # 數學意義：這會移除掉所有「小於」結構元素的亮點，只保留平緩的背景
-        background = ndimage.grey_opening(cr, size=(structure_size, structure_size))
+        print(f"  - YUV 統計：Y=[{np.min(y_channel):.0f},{np.max(y_channel):.0f}], " + 
+              f"Cb=[{np.min(cb):.0f},{np.max(cb):.0f}], Cr=[{np.min(cr):.0f},{np.max(cr):.0f}]")
         
-        # 4. 頂帽運算 (Top-Hat)
-        # 原始圖 (有痘痘) - 背景圖 (沒痘痘) = 只剩下痘痘
-        top_hat = cr - background
+        # 膚色範圍檢測（根據經驗值）
+        skin_mask = np.logical_and.reduce([
+            cb >= 70,   # Cb 下限
+            cb <= 140,  # Cb 上限
+            cr >= 130,  # Cr 下限
+            cr <= 180   # Cr 上限
+        ])
         
-        # 5. 閾值化 (Thresholding)
-        # 找出差異大於特定值的點 (這裡是經驗值，可調整)
-        threshold = 5.0 
-        blemish_mask = top_hat > threshold
+        print(f"  - 膚色候選：{np.sum(skin_mask)} 個像素 ({np.sum(skin_mask)/skin_mask.size*100:.2f}%)")
         
-        # ---------------------------------------------------
-        # B. 找出「嘴唇區域」 (大片紅色)
-        # ---------------------------------------------------
-        # 統計全圖紅色分佈
-        mean_cr = np.mean(cr)
-        std_cr = np.std(cr)
+        # 形態學閉運算：填補膚色區域內的小洞
+        morph_struct = np.ones((7, 7))
+        skin_mask = ndimage.binary_closing(skin_mask, structure=morph_struct, iterations=2)
         
-        # 找出所有紅色的地方
-        red_areas = cr > (mean_cr + 0.6 * std_cr) # 0.6 是經驗值
+        # 找出最大連通域 = 臉部主區域
+        labeled_skin, num_regions = ndimage.label(skin_mask)
+        if num_regions == 0:
+            print("  - 警告：未檢測到膚色區域！")
+            return np.zeros((h, w), dtype=bool)
         
-        # [核心數學] 形態學開運算 (Opening)
-        # 使用一個 "巨大" 的結構元素 (10x20)，比痘痘大很多
-        # 只有像嘴唇這種大面積的紅色能撐過這個運算，小痘痘會消失
-        large_structure = np.ones((10, 20))
-        lip_zone = ndimage.binary_opening(red_areas, structure=large_structure)
+        # 計算每個連通域的大小
+        region_sizes = ndimage.sum(skin_mask, labeled_skin, index=np.arange(1, num_regions + 1))
         
-        # 稍微膨脹嘴唇區域，確保嘴角周圍也被涵蓋
-        lip_zone = ndimage.binary_dilation(lip_zone, structure=np.ones((5,5)))
+        # 找出最大的連通域（臉部）
+        largest_region_label = np.argmax(region_sizes) + 1
+        face_mask = (labeled_skin == largest_region_label)
         
-        # ---------------------------------------------------
-        # C. 排除嘴唇 (Subtraction)
-        # ---------------------------------------------------
-        # 真痘痘 = 初步紅點 AND (NOT 嘴唇區域)
-        true_acne_mask = np.logical_and(blemish_mask, ~lip_zone)
+        # 輕微膨脹臉部遮罩，避免邊緣遺漏
+        face_mask = ndimage.binary_dilation(face_mask, structure=np.ones((5, 5)))
         
-        # 最後對真痘痘做一點點膨脹，確保覆蓋完整
-        true_acne_mask = ndimage.binary_dilation(true_acne_mask, structure=np.ones((3,3)))
+        print(f"  - 臉部區域：{np.sum(face_mask)} 個像素 ({np.sum(face_mask)/face_mask.size*100:.2f}%)")
         
-        return true_acne_mask
+        # ============ Step 1: 在臉部內檢測紅點 ============
+        # 痘痘是發炎區域，Cr 值會異常高
+        # 但只在臉部區域內計算統計值
+        cr_in_face = cr[face_mask]
+        mean_cr = np.mean(cr_in_face)
+        std_cr = np.std(cr_in_face)
+        
+        print(f"  - 臉部 Cr 統計：mean={mean_cr:.2f}, std={std_cr:.2f}")
+        
+        # 計算 z-score：找出異常高的紅值區域
+        # 只檢測臉部區域內的紅點
+        cr_score = (cr - mean_cr) / (std_cr + 1e-6)
+        red_mask = np.logical_and(cr_score > 0.5, face_mask)  # 必須在臉部內 + 紅值高
+        
+        print(f"  - 臉部內紅點：{np.sum(red_mask)} 個像素 ({np.sum(red_mask)/red_mask.size*100:.2f}%)")
+        
+        # ============ Step 2: 邊界清晰度檢測 (Sobel 梯度) ============
+        # 目的：排除五官邊界（嘴唇、眼睛邊界）
+        # 邏輯：高梯度 = 邊界清晰 = 五官 → 排除
+        Ky = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32)
+        Kx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+        
+        grad_y = signal.convolve2d(cr, Ky, mode='same', boundary='symm')
+        grad_x = signal.convolve2d(cr, Kx, mode='same', boundary='symm')
+        grad_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        
+        # 只在臉部區域內計算梯度統計
+        grad_in_face = grad_magnitude[face_mask]
+        grad_mean = np.mean(grad_in_face)
+        grad_std = np.std(grad_in_face)
+        
+        print(f"  - 臉部梯度統計：mean={grad_mean:.2f}, std={grad_std:.2f}")
+        
+        # 使用統計方法判斷邊界清晰度
+        # 五官邊界通常梯度很高，是異常值
+        # 但我們還要排除五官內部！
+        # 策略：標記高梯度區域，然後膨脹它，覆蓋整個五官
+        grad_zscore = (grad_magnitude - grad_mean) / (grad_std + 1e-6)
+        clear_boundary = grad_zscore > 1.0  # 識別清晰邊界
+        
+        # 膨脹邊界，擴展到整個五官內部
+        dilate_struct = np.ones((15, 15))  # 大幅膨脹
+        facial_features = ndimage.binary_dilation(clear_boundary, structure=dilate_struct)
+        
+        # 但只在臉部區域內標記五官（避免膨脹到臉外）
+        facial_features = np.logical_and(facial_features, face_mask)
+        
+        print(f"  - 清晰邊界：{np.sum(clear_boundary)} 個像素 ({np.sum(clear_boundary)/clear_boundary.size*100:.2f}%)")
+        print(f"  - 膨脹後五官區域：{np.sum(facial_features)} 個像素 ({np.sum(facial_features)/facial_features.size*100:.2f}%)")
+        
+        # ============ Step 3: 合併約束 ============
+        # 核心邏輯：
+        #   1. 必須在臉部區域內
+        #   2. 必須有紅點（發炎）
+        #   3. 排除五官區域（膨脹後的邊界）
+        
+        # 痘痘 = 臉部內的紅點 - 五官區域
+        final_acne_mask = np.logical_and(red_mask, ~facial_features)
+        
+        print(f"  - 合併後：{np.sum(final_acne_mask)} 個像素 ({np.sum(final_acne_mask)/final_acne_mask.size*100:.2f}%)")
+        
+        # ============ Step 4: 形態學優化 ============
+        # 簡化形態學操作，避免過度過濾
+        morph_struct = np.ones((2, 2))  # 縮小結構元素
+        
+        # 只做輕微的閉運算，連接接近的痘痘
+        final_acne_mask = ndimage.binary_closing(final_acne_mask, structure=morph_struct, iterations=1)
+        
+        print(f"  - 閉運算後：{np.sum(final_acne_mask)} 個像素")
+        
+        # 面積過濾：移除過小和過大的區域
+        labeled_array, num_features = ndimage.label(final_acne_mask)
+        if num_features > 0:
+            blob_sizes = ndimage.sum(final_acne_mask, labeled_array, 
+                                     index=np.arange(1, num_features + 1))
+            
+            # 打印連通域大小分布
+            print(f"  - 連通域數量：{num_features}")
+            print(f"  - 連通域大小：min={np.min(blob_sizes)}, max={np.max(blob_sizes)}, median={np.median(blob_sizes):.0f}")
+            
+            # 只過濾超大區域（可能是整個嘴唇）
+            total_pixels = h * w
+            max_size = int(total_pixels * 0.20)  # 最大 10%，排除超大區域
+            
+            # 只保留不超過上限的區域
+            size_valid = blob_sizes <= max_size
+            removed_count = num_features - np.sum(size_valid)
+            
+            if np.any(size_valid):
+                valid_labels = np.where(size_valid)[0] + 1
+                final_acne_mask = np.isin(labeled_array, valid_labels)
+                print(f"  - 保留 {len(valid_labels)} 個連通域，移除 {removed_count} 個超大區域")
+            else:
+                final_acne_mask = np.zeros_like(final_acne_mask, dtype=bool)
+                print(f"  - 所有連通域都太大（全部過濾）")
+        
+        print(f"  - 找到 {np.sum(final_acne_mask)} 個痘痘像素")
+        
+        return final_acne_mask
     
     # ==========================================================
     # 主流程分析
@@ -201,58 +299,46 @@ class SignalProcessingAnalyzer:
         Y_gamma = self.gamma_correction(Y_channel, gamma=0.9)
         Y_eq = self.histogram_equalization(Y_gamma)
         
-        # Stage 2: Sobel
-        edges = self.sobel_gradients(Y_eq)
+        # Stage 2: Sobel - 邊緣檢測
+        # 目的：保護眼睛、嘴巴等邊界清晰的五官區域
+        # 提高閾值，只保護非常明顯的邊緣
+        Y_blurred = ndimage.gaussian_filter(Y_eq, sigma=1.0)
+        edges = self.sobel_gradients(Y_blurred)
+        edge_mask = edges > 0.40  # 提高到 0.40，只保護最清晰的邊緣
         
-        # Stage 3: Gabor
+        # Stage 3: Gabor - 紋理特徵
+        # 目的：識別五官的複雜紋理（眼睛睫毛、唇紋等）
+        # 大幅提高閾值，避免把整個臉都標記為高紋理
         features_texture = self.gabor_filter_bank(Y_eq)
         features_texture = features_texture / np.max(features_texture)
+        mask_feat = features_texture > 0.35  # 提高到 0.35，只保護最突出的紋理區域
         
-        # --- Stage 4: 瑕疵偵測 ---
-        # 傳入原始 YUV (未經直方圖等化的，因為等化會破壞色差關係)
+        # --- Stage 4: 改進的瑕疵偵測 ---
+        # 新方法已經內部包含多層約束，檢測出的都是痘痘
         blemish_mask = self.detect_blemishes(yuv)
         
-        # --- 綜合分析 ---
-        mask_edge = edges > 0.15
-        mask_feat = features_texture > 0.1
+        # 直接使用痘痘遮罩，不再用邊緣二次過濾
+        # （邊緣檢測已在 detect_blemishes 中的梯度約束裡）
+        final_acne_mask = blemish_mask.copy()
         
-        # 1. 原始保護區 (五官 + 邊緣)
-        protection_mask = np.logical_or(mask_edge, mask_feat)
+        # --- Stage 5: 生成處理遮罩 ---
+        # 新策略：不再使用"五官保護遮罩"，而是直接反轉痘痘遮罩
+        # 保護區 = NOT 痘痘 = 整個臉 - 痘痘
+        # 這樣痘痘區域（mask=0）會被處理，其他區域（mask=1）保持原樣
         
-        # 2. 痘痘排除邏輯 (Cr Channel Exclusion)
-        # 原理：痘痘在 YCbCr 的 Cr (紅色差) 通道數值會異常高
-        # 我們利用統計學 (Mean + Std) 來自動找出這些紅點
+        # 先適度擴張痘痘區域（確保完全覆蓋）
+        dilate_struct = np.ones((5, 5))
+        expanded_acne = ndimage.binary_dilation(final_acne_mask, structure=dilate_struct)
         
-        # 取出 Cr 通道 (yuv 是你前面算出來的變數)
-        cr_channel = yuv[:, :, 2] 
-        mean_cr = np.mean(cr_channel)
-        std_cr = np.std(cr_channel)
-        # 定義：比平均紅度高出 1.2 倍標準差的區域 = 痘痘/紅斑
-        # 這個 1.2 可以微調 (越小抓越多痘痘)
-        is_acne = cr_channel > (mean_cr + 1.2 * std_cr)
+        # 反轉：保護遮罩 = 非痘痘區域
+        # 痘痘區域是 0（會被處理），其他是 1（保持原圖）
+        protect_mask = ~expanded_acne
         
-        # 3. 從保護區中「挖掉」痘痘
-        # 邏輯：保護區 AND (NOT 痘痘)
-        # 這樣五官還是白的，但臉頰上的紅痘痘會變成黑的 (可磨皮)
-        refined_mask = np.logical_and(protection_mask, ~is_acne)
+        # 羽化邊界
+        final_protect_mask = ndimage.gaussian_filter(protect_mask.astype(np.float32), sigma=3.0)
         
-         # 數學原理：痘痘像素總數 / 圖片總像素數
-        acne_score = np.sum(blemish_mask) / blemish_mask.size
-        
-        print(f"--- 分析報告 ---")
-        print(f"痘痘分數: {acne_score:.5f} (門檻建議 0.002)")
-        # 4. 遮罩形態學優化 (Morphological Smoothing)
-        # 目的：去除遮罩上的雜訊噪點，並讓邊緣柔和
-        
-        # A. 閉運算 (Closing): 把斷裂的線條接起來，填補小洞
-        # 使用 5x5 的矩陣作為結構元素
-        structure = np.ones((5, 5)) 
-        mask_closed = ndimage.binary_closing(refined_mask, structure=structure)
-        
-        # B. 高斯羽化 (Gaussian Feathering)
-        # 讓遮罩從 0/1 的二值變成 0.0~1.0 的灰階
-        # sigma=2.0 代表羽化邊緣的寬度
-        final_protect_mask = ndimage.gaussian_filter(mask_closed.astype(np.float32), sigma=2.0)
+        # 計算瑕疵分數（用於判斷是否啟動強力模式）
+        acne_score = np.sum(final_acne_mask) / final_acne_mask.size
+        print(f"痘痘分數: {acne_score:.5f}")
                
-        # 3. 回傳三個值：保護遮罩、痘痘遮罩、分數
-        return final_protect_mask, blemish_mask, acne_score
+        return final_protect_mask, final_acne_mask, acne_score
