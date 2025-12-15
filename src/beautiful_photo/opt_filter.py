@@ -111,7 +111,7 @@ class MathGuidedFilter:
         result = smooth_base + high_freq_texture
         
         # ==========================================================
-        # 新增功能：美白 (Whitening) - 針對皮膚區域
+        # 功能：美白 (Whitening) - 針對皮膚區域
         # ==========================================================
         if whitening > 0:
             # 使用 Gamma Correction 來提亮膚色 (Gamma < 1 會變亮)
@@ -180,9 +180,7 @@ class MathGuidedFilter:
         # 這裡直接回傳 RGB (因為我們是用 PIL 讀取的 RGB)
         return final_output_uint8
 
-    # 保留舊方法以供參考 (Optional)
     def get_integral_image(self, img):
-        # ...existing code...
         integral = np.cumsum(img, axis=0).astype(np.float64)
         integral = np.cumsum(integral, axis=1)
         
@@ -193,7 +191,6 @@ class MathGuidedFilter:
         return padded_integral
 
     def box_filter_fast(self, img, r):
-        # ...existing code...
         h, w = img.shape
         # 1. 計算積分圖
         S = self.get_integral_image(img)
@@ -225,7 +222,6 @@ class MathGuidedFilter:
         return region_sum / count
 
     def guided_filter(self, I, p, r, eps):
-        # ...existing code...
         print(f"正在執行數學導向濾波 (r={r}, eps={eps})...")
         
         # 1. 計算各種平均值 (Mean) - 使用我們手寫的 box_filter_fast
@@ -254,7 +250,7 @@ class MathGuidedFilter:
         q = mean_a * I + mean_b
         return q
 
-    def process_image_old(self, image_path, mask=None, blemish_mask=None, r=15, eps=0.05):
+    def process_image_traditional(self, image_path, mask=None, blemish_mask=None, r=15, eps=0.05):
         # 1. 讀取圖片
         img_pil = Image.open(image_path)
         w, h = img_pil.size
