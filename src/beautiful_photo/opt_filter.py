@@ -29,6 +29,10 @@ class MathGuidedFilter:
             print(f"讀取影像發生錯誤: {e}")
             raise ValueError(f"無法讀取影像: {image_path}")
 
+        # 獲取圖片尺寸
+        h, w = img_rgb.shape[:2]
+        print(f"影像尺寸: {w}x{h} (寬x高)")
+        
         # 轉為浮點數 (0-1) 方便計算
         img_float = img_rgb.astype(np.float32) / 255.0
         
@@ -40,6 +44,15 @@ class MathGuidedFilter:
             # 檢查是否有偵測到痘痘
             if np.sum(blemish_mask) > 0:
                 print("正在執行針對性紅點修復 (Simple Inpainting)...")
+                print(f"Blemish mask 原始尺寸: {blemish_mask.shape}")
+                
+                # 確保 blemish_mask 維度與影像一致
+                if blemish_mask.shape[:2] != (h, w):
+                    print(f"調整 blemish_mask 尺寸從 {blemish_mask.shape} 到 ({h}, {w})")
+                    # 使用 scipy 的 zoom 調整大小
+                    zoom_factors = (h / blemish_mask.shape[0], w / blemish_mask.shape[1])
+                    blemish_mask = ndimage.zoom(blemish_mask, zoom_factors, order=0)  # order=0 nearest neighbor
+                    print(f"調整後的 blemish_mask 尺寸: {blemish_mask.shape}")
                 
                 # 簡單修復：對痘痘區域使用高斯模糊填補 (或是使用周圍平均)
                 # 由於移除了 cv2.inpaint，我們使用 scipy 的 gaussian_filter 模擬
@@ -123,17 +136,19 @@ class MathGuidedFilter:
             # mask: 1=保護(不磨皮), 0=皮膚(要磨皮)
             # 我們需要將 mask 調整大小並羽化
             
+            print(f"Protect mask 原始尺寸: {mask.shape}")
+            
             # 確保 mask 是 float32
             if mask.dtype != np.float32:
                 mask = mask.astype(np.float32)
                 
             # Resize mask to match image
-            h, w = img_float.shape[:2]
             if mask.shape[:2] != (h, w):
+                print(f"調整 protect mask 尺寸從 {mask.shape} 到 ({h}, {w})")
                 # 使用 scipy.ndimage.zoom 進行縮放
-                zoom_h = h / mask.shape[0]
-                zoom_w = w / mask.shape[1]
-                mask = ndimage.zoom(mask, (zoom_h, zoom_w), order=1) # order=1 (bilinear)
+                zoom_factors = (h / mask.shape[0], w / mask.shape[1])
+                mask = ndimage.zoom(mask, zoom_factors, order=1)  # order=1 bilinear
+                print(f"調整後的 protect mask 尺寸: {mask.shape}")
                 
             # 羽化遮罩 (避免邊界生硬)
             mask_soft = ndimage.gaussian_filter(mask, sigma=5)
@@ -252,10 +267,20 @@ class MathGuidedFilter:
             print("正在修復皮膚瑕疵 (使用積分圖 Box Filter)...")
             
             # A. 調整 Mask 大小 (Resize) - 使用 PIL
+            # 注意：img_pil.size 是 (width, height)，但 img_arr.shape 是 (height, width, channels)
             b_mask_pil = Image.fromarray((blemish_mask * 255).astype(np.uint8))
+            # PIL resize 參數是 (width, height)
             b_mask_resized = b_mask_pil.resize((w, h), Image.Resampling.BILINEAR)
             # 轉回 Boolean Mask
-            b_mask_arr = np.array(b_mask_resized) > 100 
+            b_mask_arr = np.array(b_mask_resized) > 100
+            
+            # 確認維度匹配
+            if b_mask_arr.shape != (h, w):
+                print(f"警告：b_mask_arr 維度不匹配！預期 {(h, w)}，實際 {b_mask_arr.shape}")
+                # 強制 resize
+                b_mask_pil = Image.fromarray(b_mask_arr.astype(np.uint8) * 255)
+                b_mask_pil = b_mask_pil.resize((w, h), Image.Resampling.NEAREST)
+                b_mask_arr = np.array(b_mask_pil) > 100 
 
             # B. 製作一張「全圖模糊」的底圖
             # 這裡直接呼叫我們自己寫的 box_filter_fast (純數學積分圖)
@@ -288,8 +313,17 @@ class MathGuidedFilter:
             # 1. Resize Mask
             mask_uint8 = (mask * 255).astype(np.uint8) if mask.dtype != np.uint8 else mask
             mask_pil = Image.fromarray(mask_uint8)
+            # PIL resize 參數是 (width, height)
             mask_resized = mask_pil.resize((w, h), Image.Resampling.BILINEAR)
             mask_float = np.array(mask_resized, dtype=np.float32) / 255.0
+            
+            # 確認維度匹配
+            if mask_float.shape != (h, w):
+                print(f"警告：mask_float 維度不匹配！預期 {(h, w)}，實際 {mask_float.shape}")
+                # 強制 resize
+                mask_pil = Image.fromarray((mask_float * 255).astype(np.uint8))
+                mask_pil = mask_pil.resize((w, h), Image.Resampling.BILINEAR)
+                mask_float = np.array(mask_pil, dtype=np.float32) / 255.0
             
             # 2. 羽化 (使用積分圖 box_filter 代替高斯模糊)
             mask_soft = self.box_filter_fast(mask_float, r=2)
