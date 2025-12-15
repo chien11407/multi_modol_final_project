@@ -1,0 +1,6 @@
+mediapipe>=0.10.0
+opencv-python>=4.8.0
+numpy>=1.21.0
+pillow>=9.0.0
+scipy>=1.7.0
+matplotlib>=3.4.0
