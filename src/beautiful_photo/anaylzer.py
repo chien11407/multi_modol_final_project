@@ -143,18 +143,17 @@ class SignalProcessingAnalyzer:
         # 2. 定義結構元素的大小 (Kernel Size)
         # 假設痘痘半徑約 4-6 像素
         structure_size = 10
-        
         # 3. 執行「灰階開運算 (Grayscale Opening)」
         # 數學意義：這會移除掉所有「小於」結構元素的亮點，只保留平緩的背景
         background = ndimage.grey_opening(cr, size=(structure_size, structure_size))
-        
         # 4. 頂帽運算 (Top-Hat)
         # 原始圖 (有痘痘) - 背景圖 (沒痘痘) = 只剩下痘痘
         top_hat = cr - background
         
         # 5. 閾值化 (Thresholding)
         # 找出差異大於特定值的點 (這裡是經驗值，可調整)
-        threshold = 5.0 
+        # 這裡的門檻值設定為 2.5，能夠準確的抓到痘痘區間
+        threshold = 2.5
         blemish_mask = top_hat > threshold
         
         # ---------------------------------------------------
@@ -165,26 +164,46 @@ class SignalProcessingAnalyzer:
         std_cr = np.std(cr)
         
         # 找出所有紅色的地方
-        red_areas = cr > (mean_cr + 0.6 * std_cr) # 0.6 是經驗值
+        # 這裡的門檻值設定為 1.0，可以更準的抓到紅色區域(痘痘和嘴唇)
+        red_areas = cr > (mean_cr + 1.5 * std_cr) # 0.6 是經驗值
         
         # [核心數學] 形態學開運算 (Opening)
         # 使用一個 "巨大" 的結構元素 (10x20)，比痘痘大很多
         # 只有像嘴唇這種大面積的紅色能撐過這個運算，小痘痘會消失
-        large_structure = np.ones((10, 20))
-        lip_zone = ndimage.binary_opening(red_areas, structure=large_structure)
+        #large_structure = np.ones((10, 20))
+        #lip_zone = ndimage.binary_opening(red_areas, structure=large_structure)
         
         # 稍微膨脹嘴唇區域，確保嘴角周圍也被涵蓋
-        lip_zone = ndimage.binary_dilation(lip_zone, structure=np.ones((5,5)))
-        
+        #lip_zone = ndimage.binary_dilation(lip_zone, structure=np.ones((5,5)))
+        lip_area = cr > (mean_cr + 2.0 * std_cr)
         # ---------------------------------------------------
         # C. 排除嘴唇 (Subtraction)
         # ---------------------------------------------------
         # 真痘痘 = 初步紅點 AND (NOT 嘴唇區域)
-        true_acne_mask = np.logical_and(blemish_mask, ~lip_zone)
-        
+        #true_acne_mask = np.logical_and(blemish_mask, ~lip_zone)
+        true_acne_mask = np.logical_and(blemish_mask,~lip_area)
         # 最後對真痘痘做一點點膨脹，確保覆蓋完整
         true_acne_mask = ndimage.binary_dilation(true_acne_mask, structure=np.ones((3,3)))
-        
+
+        # 測試區
+        plt.imshow(red_areas, cmap='gray')
+        plt.axis('off')
+        plt.savefig("red_areas.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(blemish_mask, cmap='gray')
+        plt.axis('off')
+        plt.savefig("blemish_mask.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(true_acne_mask, cmap='gray')
+        plt.axis('off')
+        plt.savefig("true_acne_mask.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(lip_area, cmap='gray')
+        plt.axis('off')
+        plt.savefig("lip_area.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        # 測試區停止
+
         return true_acne_mask
     
     # ==========================================================
@@ -215,26 +234,18 @@ class SignalProcessingAnalyzer:
         # --- 綜合分析 ---
         mask_edge = edges > 0.15
         mask_feat = features_texture > 0.1
-        
+        gray = np.mean(img_arr, axis=2)
+        black_area = gray < 70 
+        white_area = gray > 190
         # 1. 原始保護區 (五官 + 邊緣)
-        protection_mask = np.logical_or(mask_edge, mask_feat)
-        
-        # 2. 痘痘排除邏輯 (Cr Channel Exclusion)
-        # 原理：痘痘在 YCbCr 的 Cr (紅色差) 通道數值會異常高
-        # 我們利用統計學 (Mean + Std) 來自動找出這些紅點
-        
-        # 取出 Cr 通道 (yuv 是你前面算出來的變數)
-        cr_channel = yuv[:, :, 2] 
-        mean_cr = np.mean(cr_channel)
-        std_cr = np.std(cr_channel)
-        # 定義：比平均紅度高出 1.2 倍標準差的區域 = 痘痘/紅斑
-        # 這個 1.2 可以微調 (越小抓越多痘痘)
-        is_acne = cr_channel > (mean_cr + 1.2 * std_cr)
-        
+        protection_mask = mask_edge|mask_feat
+        refined_mask = np.logical_and(protection_mask,~blemish_mask)
+        refined_mask = np.logical_or(refined_mask,black_area)
+        refined_mask = np.logical_or(refined_mask,white_area)
         # 3. 從保護區中「挖掉」痘痘
         # 邏輯：保護區 AND (NOT 痘痘)
         # 這樣五官還是白的，但臉頰上的紅痘痘會變成黑的 (可磨皮)
-        refined_mask = np.logical_and(protection_mask, ~is_acne)
+        
         
          # 數學原理：痘痘像素總數 / 圖片總像素數
         acne_score = np.sum(blemish_mask) / blemish_mask.size
@@ -253,6 +264,35 @@ class SignalProcessingAnalyzer:
         # 讓遮罩從 0/1 的二值變成 0.0~1.0 的灰階
         # sigma=2.0 代表羽化邊緣的寬度
         final_protect_mask = ndimage.gaussian_filter(mask_closed.astype(np.float32), sigma=2.0)
-               
+        
+
         # 3. 回傳三個值：保護遮罩、痘痘遮罩、分數
+
+        # 測試區
+        plt.imshow(protection_mask, cmap='gray')
+        plt.axis('off')
+        plt.savefig("protection_mask.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(final_protect_mask, cmap='gray')
+        plt.axis('off')
+        plt.savefig("final_protect_mask.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(mask_edge, cmap='gray')
+        plt.axis('off')
+        plt.savefig("mask_edge.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(mask_feat, cmap='gray')
+        plt.axis('off')
+        plt.savefig("mask_feat.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(black_area, cmap='gray')
+        plt.axis('off')
+        plt.savefig("black_area.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        plt.imshow(white_area, cmap='gray')
+        plt.axis('off')
+        plt.savefig("white_area.png", bbox_inches='tight', pad_inches=0)
+        plt.close()
+        # 測試區停止
+
         return final_protect_mask, blemish_mask, acne_score
