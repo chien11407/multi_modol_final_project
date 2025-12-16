@@ -168,9 +168,13 @@ class SignalProcessingAnalyzer:
         threshold = 2.5
         blemish_mask = top_hat > threshold
         
-        # 痘痘 = 臉部內的紅點 - 五官區域
-        final_acne_mask = np.logical_and(red_mask, ~facial_features)
-        
+        # ---------------------------------------------------
+        # B. 找出「嘴唇區域」 (大片紅色)
+        # ---------------------------------------------------
+        # 統計全圖紅色分佈
+        mean_cr = np.mean(cr)
+        std_cr = np.std(cr)
+                
         # 找出所有紅色的地方
         # 這裡的門檻值設定為 1.0，可以更準的抓到紅色區域(痘痘和嘴唇)
         red_areas = cr > (mean_cr + 1.5 * std_cr) # 0.6 是經驗值

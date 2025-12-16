@@ -148,7 +148,7 @@ with col1:
     if uploaded_file is not None:
         # 顯示原始照片
         original_image = Image.open(uploaded_file)
-        st.image(original_image, caption="原始照片", use_container_width=True)
+        st.image(original_image, caption="原始照片", width="stretch")
         
         # 顯示照片資訊
         st.info(f"📊 圖片尺寸: {original_image.size[0]} x {original_image.size[1]} px")
@@ -158,7 +158,7 @@ with col2:
     
     if uploaded_file is not None:
         # 處理按鈕
-        if st.button("🎨 開始美顏處理", use_container_width=True):
+        if st.button("🎨 開始美顏處理", width="stretch"):
             with st.spinner("正在處理中，請稍候..."):
                 try:
                     # 儲存暫存檔案
@@ -220,7 +220,7 @@ with col2:
                     status_text.text("✅ 處理完成！")
                     
                     # 顯示結果
-                    st.image(result, caption="處理後照片", use_container_width=True)
+                    st.image(result, caption="處理後照片", width="stretch")
                     
                     # 儲存 session state 以便下載
                     st.session_state['processed_image'] = result
@@ -251,7 +251,7 @@ with col2:
                 data=byte_im,
                 file_name="beautified_photo.jpg",
                 mime="image/jpeg",
-                use_container_width=True
+                width="stretch"
             )
     else:
         st.info("👈 請先上傳一張照片")
