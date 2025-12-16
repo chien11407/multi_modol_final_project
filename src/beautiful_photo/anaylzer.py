@@ -1,8 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy import signal
 from scipy import ndimage
+
+try:
+    import mediapipe as mp
+    HAS_MEDIAPIPE = True
+except ImportError:
+    HAS_MEDIAPIPE = False
+    print("Warning: MediaPipe not found. MediaPipeAnalyzer will not work.")
 
 class SignalProcessingAnalyzer:
     def __init__(self):
@@ -127,17 +134,22 @@ class SignalProcessingAnalyzer:
 
 
     # ==========================================================
-    # 痘痘 mask
+    # 改進的痘痘偵測：先檢測臉部，再檢測痘痘
+    # ==========================================================
     def detect_blemishes(self, yuv_img):
         """
-        數學原理：形態學頂帽運算 (Top-Hat Transform)
-        公式：TopHat(f) = f - Open(f)
-             Open(f) = Dilate(Erode(f))  (先腐蝕再膨脹)
-        """
-        print("正在偵測皮膚瑕疵 (使用 SciPy 形態學)...")
+        改進的痘痘檢測方法 - 先限定臉部區域
         
-        # 1. 取出 Cr 通道 (紅色色差)
-        # 痘痘在 Cr 通道通常數值較高 (偏紅)
+        核心邏輯：
+        1. 先檢測臉部區域（膚色檢測 + 最大連通域）
+        2. 在臉部內檢測紅點（發炎痘痘）
+        3. 排除五官邊界（梯度膨脹）
+        """
+        print("正在偵測痘痘 (先檢測臉部版)...")
+        
+        h, w = yuv_img.shape[:2]
+        y_channel = yuv_img[:, :, 0].astype(np.float32)
+        cb = yuv_img[:, :, 1].astype(np.float32)
         cr = yuv_img[:, :, 2].astype(np.float32)
         
         # 2. 定義結構元素的大小 (Kernel Size)
@@ -156,12 +168,8 @@ class SignalProcessingAnalyzer:
         threshold = 2.5
         blemish_mask = top_hat > threshold
         
-        # ---------------------------------------------------
-        # B. 找出「嘴唇區域」 (大片紅色)
-        # ---------------------------------------------------
-        # 統計全圖紅色分佈
-        mean_cr = np.mean(cr)
-        std_cr = np.std(cr)
+        # 痘痘 = 臉部內的紅點 - 五官區域
+        final_acne_mask = np.logical_and(red_mask, ~facial_features)
         
         # 找出所有紅色的地方
         # 這裡的門檻值設定為 1.0，可以更準的抓到紅色區域(痘痘和嘴唇)
@@ -220,15 +228,22 @@ class SignalProcessingAnalyzer:
         Y_gamma = self.gamma_correction(Y_channel, gamma=0.9)
         Y_eq = self.histogram_equalization(Y_gamma)
         
-        # Stage 2: Sobel
-        edges = self.sobel_gradients(Y_eq)
+        # Stage 2: Sobel - 邊緣檢測
+        # 目的：保護眼睛、嘴巴等邊界清晰的五官區域
+        # 提高閾值，只保護非常明顯的邊緣
+        Y_blurred = ndimage.gaussian_filter(Y_eq, sigma=1.0)
+        edges = self.sobel_gradients(Y_blurred)
+        edge_mask = edges > 0.40  # 提高到 0.40，只保護最清晰的邊緣
         
-        # Stage 3: Gabor
+        # Stage 3: Gabor - 紋理特徵
+        # 目的：識別五官的複雜紋理（眼睛睫毛、唇紋等）
+        # 大幅提高閾值，避免把整個臉都標記為高紋理
         features_texture = self.gabor_filter_bank(Y_eq)
         features_texture = features_texture / np.max(features_texture)
+        mask_feat = features_texture > 0.35  # 提高到 0.35，只保護最突出的紋理區域
         
-        # --- Stage 4: 瑕疵偵測 ---
-        # 傳入原始 YUV (未經直方圖等化的，因為等化會破壞色差關係)
+        # --- Stage 4: 改進的瑕疵偵測 ---
+        # 新方法已經內部包含多層約束，檢測出的都是痘痘
         blemish_mask = self.detect_blemishes(yuv)
         
         # --- 綜合分析 ---
@@ -296,3 +311,155 @@ class SignalProcessingAnalyzer:
         # 測試區停止
 
         return final_protect_mask, blemish_mask, acne_score
+      
+class MediaPipeAnalyzer:
+    def __init__(self):
+        print("初始化 MediaPipe 分析儀...")
+        if not HAS_MEDIAPIPE:
+            raise RuntimeError("MediaPipe is not installed. Please install it to use MediaPipeAnalyzer.")
+            
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5
+        )
+
+    def analyze_pipeline(self, image_path):
+        """
+        使用 MediaPipe 偵測臉部特徵
+        回傳:
+        1. protect_mask: 保護區域 (眼睛、嘴巴、眉毛、背景) 為 1，皮膚為 0
+        2. acne_mask: 這裡暫時回傳 None 或全黑，因為 MediaPipe 主要偵測幾何特徵
+        3. score: 膚況分數 (暫時回傳 0，讓 main.py 走輕量模式，或依需求調整)
+        """
+        print(f"正在使用 MediaPipe 分析影像: {image_path}")
+        
+        # 1. 讀取影像 (使用 PIL)
+        try:
+            pil_image = Image.open(image_path)
+            # 確保是 RGB
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+            image_rgb = np.array(pil_image)
+        except Exception as e:
+            print(f"讀取影像發生錯誤: {e}")
+            raise ValueError(f"無法讀取影像: {image_path}")
+        
+        h, w = image_rgb.shape[:2]
+        
+        # 2. 執行 Face Mesh
+        results = self.face_mesh.process(image_rgb)
+        
+        # 準備 mask (預設全白 = 全部保護/不處理)
+        # 我們希望皮膚部分是 0 (要處理)，其他部分是 1 (保護)
+        
+        # 使用 PIL ImageDraw 來繪製多邊形
+        mask_img = Image.new('L', (w, h), 255) # 255 = White (Protect)
+        draw = ImageDraw.Draw(mask_img)
+        
+        if results.multi_face_landmarks:
+            face_landmarks = results.multi_face_landmarks[0]
+            
+            def get_coords(indices):
+                coords = []
+                for idx in indices:
+                    pt = face_landmarks.landmark[idx]
+                    coords.append((int(pt.x * w), int(pt.y * h)))
+                return coords # List of tuples for PIL
+
+            # 定義特徵區域的索引 (MediaPipe Face Mesh Topology)
+            
+            # Face Oval
+            face_oval_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+            
+            # 1. Face Oval -> 設為 0 (皮膚區域)
+            # MediaPipe 的 Face Oval 索引是有順序的，可以直接畫多邊形
+            face_oval_points = get_coords(face_oval_indices)
+            draw.polygon(face_oval_points, fill=0)
+
+            # 2. 保護區域 -> 設為 1 (255)
+            # 眼睛
+            left_eye_indices = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7]
+            right_eye_indices = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382]
+            
+            # 眉毛
+            left_eyebrow_indices = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46]
+            right_eyebrow_indices = [336, 296, 334, 293, 300, 276, 283, 282, 295, 285]
+            
+            # 嘴巴
+            lips_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]
+
+            features = [left_eye_indices, right_eye_indices, left_eyebrow_indices, right_eyebrow_indices, lips_indices]
+            
+            for indices in features:
+                points = get_coords(indices)
+                draw.polygon(points, fill=255)
+
+            # 轉回 numpy array (0-1 float)
+            protect_mask = np.array(mask_img, dtype=np.float32) / 255.0
+
+            # ==========================================================
+            # 新增：紅點/痘痘偵測 (Red Spot / Acne Detection) - NumPy 實作
+            # ==========================================================
+            # 1. 轉換到 YCrCb 色彩空間
+            # Formula:
+            # Y = 0.299R + 0.587G + 0.114B
+            # Cr = (R - Y) * 0.713 + 128
+            # Cb = (B - Y) * 0.564 + 128
+            
+            R = image_rgb[:,:,0].astype(np.float32)
+            G = image_rgb[:,:,1].astype(np.float32)
+            B = image_rgb[:,:,2].astype(np.float32)
+            
+            Y = 0.299 * R + 0.587 * G + 0.114 * B
+            Cr = (R - Y) * 0.713 + 128.0
+            
+            # 2. 提取皮膚區域 (利用 protect_mask == 0 的部分)
+            skin_mask_bool = protect_mask < 0.5
+            
+            # 3. 計算皮膚區域的 Cr 平均值與標準差
+            if np.sum(skin_mask_bool) > 0:
+                cr_skin = Cr[skin_mask_bool]
+                mean_cr = np.mean(cr_skin)
+                std_cr = np.std(cr_skin)
+                
+                # 4. 設定閾值
+                threshold = mean_cr + 1.5 * std_cr
+                
+                # 5. 產生二值化遮罩
+                acne_candidates = (Cr > threshold)
+                
+                # 6. 限制在皮膚區域內
+                acne_mask_raw = np.logical_and(acne_candidates, skin_mask_bool)
+                
+                # 7. 形態學運算：去除雜訊 (太小的點)
+                # 使用 scipy.ndimage.binary_opening
+                # kernel size 3x3 roughly equivalent to iterations=1
+                structure = ndimage.generate_binary_structure(2, 1) # 3x3 cross
+                acne_mask_clean = ndimage.binary_opening(acne_mask_raw, structure=structure)
+                
+                # 8. 稍微膨脹一點
+                acne_mask_final = ndimage.binary_dilation(acne_mask_clean, structure=structure, iterations=2)
+                
+                # 轉為 float32
+                acne_mask = acne_mask_final.astype(np.float32)
+                
+                # 計算分數
+                acne_pixels = np.sum(acne_mask_final)
+                skin_pixels = np.sum(skin_mask_bool)
+                score = acne_pixels / skin_pixels
+                
+                print(f"偵測到痘痘區域佔比: {score:.4%}")
+            else:
+                acne_mask = np.zeros((h, w), dtype=np.float32)
+                score = 0.0
+            
+        else:
+            # 沒偵測到臉
+            protect_mask = np.ones((h, w), dtype=np.float32)
+            acne_mask = np.zeros((h, w), dtype=np.float32)
+            score = 0.0
+        
+        return protect_mask, acne_mask, score

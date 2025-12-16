@@ -12,4 +12,9 @@ cd sample
 uv run main.py
 ```
 
+### 3. Execute on Web
+```
+uv run streamlit run app.py
+``` 
+
 ## Technology
