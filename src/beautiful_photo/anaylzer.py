@@ -23,9 +23,9 @@ class SignalProcessingAnalyzer:
         數學原理：線性變換 (Linear Transformation)
         Y (Luma) = 亮度, U/V (Chroma) = 色度
         """
-        m = np.array([[ 0.29900, -0.16874,  0.50000],
-                      [ 0.58700, -0.33126, -0.41869],
-                      [ 0.11400,  0.50000, -0.08131]])
+        m = np.array([[ 0.299, -0.169,  0.500],
+                      [ 0.587, -0.334, -0.419],
+                      [ 0.114,  0.500, -0.081]])
         yuv = np.dot(rgb, m)
         yuv[:,:,1:] += 128.0 # Offset UV to be positive
         return yuv
@@ -134,11 +134,11 @@ class SignalProcessingAnalyzer:
 
 
     # ==========================================================
-    # 改進的痘痘偵測：先檢測臉部，再檢測痘痘
+    # 痘痘偵測：先檢測臉部，再檢測痘痘
     # ==========================================================
     def detect_blemishes(self, yuv_img):
         """
-        改進的痘痘檢測方法 - 先限定臉部區域
+        痘痘檢測方法 - 先限定臉部區域
         
         核心邏輯：
         1. 先檢測臉部區域（膚色檢測 + 最大連通域）
@@ -147,7 +147,6 @@ class SignalProcessingAnalyzer:
         """
         print("正在偵測痘痘 (先檢測臉部版)...")
         
-        h, w = yuv_img.shape[:2]
         y_channel = yuv_img[:, :, 0].astype(np.float32)
         cb = yuv_img[:, :, 1].astype(np.float32)
         cr = yuv_img[:, :, 2].astype(np.float32)
@@ -198,6 +197,7 @@ class SignalProcessingAnalyzer:
         true_acne_mask = ndimage.binary_dilation(true_acne_mask, structure=np.ones((3,3)))
 
         # 測試區
+        '''
         plt.imshow(red_areas, cmap='gray')
         plt.axis('off')
         plt.savefig("red_areas.png", bbox_inches='tight', pad_inches=0)
@@ -215,7 +215,8 @@ class SignalProcessingAnalyzer:
         plt.savefig("lip_area.png", bbox_inches='tight', pad_inches=0)
         plt.close()
         # 測試區停止
-
+        '''
+        
         return true_acne_mask
     
     # ==========================================================
@@ -237,7 +238,6 @@ class SignalProcessingAnalyzer:
         # 提高閾值，只保護非常明顯的邊緣
         Y_blurred = ndimage.gaussian_filter(Y_eq, sigma=1.0)
         edges = self.sobel_gradients(Y_blurred)
-        edge_mask = edges > 0.40  # 提高到 0.40，只保護最清晰的邊緣
         
         # Stage 3: Gabor - 紋理特徵
         # 目的：識別五官的複雜紋理（眼睛睫毛、唇紋等）
@@ -246,18 +246,22 @@ class SignalProcessingAnalyzer:
         features_texture = features_texture / np.max(features_texture)
         mask_feat = features_texture > 0.35  # 提高到 0.35，只保護最突出的紋理區域
         
-        # --- Stage 4: 改進的瑕疵偵測 ---
-        # 新方法已經內部包含多層約束，檢測出的都是痘痘
+        # --- Stage 4: 瑕疵偵測 ---
+        # 內部包含多層約束，檢測出的都是痘痘
         blemish_mask = self.detect_blemishes(yuv)
         
         # --- 綜合分析 ---
         mask_edge = edges > 0.15
         mask_feat = features_texture > 0.1
         gray = np.mean(img_arr, axis=2)
+        
+        # 保留黑白區域
         black_area = gray < 70 
         white_area = gray > 190
+        
         # 1. 原始保護區 (五官 + 邊緣)
-        protection_mask = mask_edge|mask_feat
+        protection_mask = np.logical_or(mask_edge, mask_feat)
+        
         refined_mask = np.logical_and(protection_mask,~blemish_mask)
         refined_mask = np.logical_or(refined_mask,black_area)
         refined_mask = np.logical_or(refined_mask,white_area)
@@ -266,7 +270,7 @@ class SignalProcessingAnalyzer:
         # 這樣五官還是白的，但臉頰上的紅痘痘會變成黑的 (可磨皮)
         
         
-         # 數學原理：痘痘像素總數 / 圖片總像素數
+        # 數學原理：痘痘像素總數 / 圖片總像素數
         acne_score = np.sum(blemish_mask) / blemish_mask.size
         
         print(f"--- 分析報告 ---")
@@ -286,7 +290,7 @@ class SignalProcessingAnalyzer:
         
 
         # 3. 回傳三個值：保護遮罩、痘痘遮罩、分數
-
+        '''
         # 測試區
         plt.imshow(protection_mask, cmap='gray')
         plt.axis('off')
@@ -313,6 +317,7 @@ class SignalProcessingAnalyzer:
         plt.savefig("white_area.png", bbox_inches='tight', pad_inches=0)
         plt.close()
         # 測試區停止
+        '''
 
         return final_protect_mask, blemish_mask, acne_score
       

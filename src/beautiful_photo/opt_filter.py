@@ -161,7 +161,6 @@ class MathGuidedFilter:
         high_freq_texture = img_float - blur_small
         
         # 2. 建立平滑基底 (Low Frequency / Base)
-        # 原本使用 cv2.bilateralFilter，現在改用本類別實作的 Guided Filter
         # Guided Filter 也是一種 Edge-Preserving Smoothing Filter
         
         smooth_base = np.zeros_like(img_float)
