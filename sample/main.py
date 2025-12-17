@@ -21,7 +21,7 @@ def main():
     # 2. 處理 (傳入兩個 mask)
     # 2. 設定判斷門檻 (0.2%)
     # 如果分數 > 0.002，代表滿臉痘痘，需要重手處理
-    THRESHOLD = 0.02
+    THRESHOLD = 0.002
     
     # MediaPipeAnalyzer 目前回傳 score=0，所以會走輕量模式 (純磨皮)
     if score < THRESHOLD:
