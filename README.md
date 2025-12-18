@@ -18,3 +18,7 @@ uv run streamlit run app.py
 ``` 
 
 ## Technology
+Muiti-Model Class Method
+[Report](./MIP_Final.pdf)
+
+## [Learn more for Code Architecture](https://deepwiki.com/chien11407/multi_modol_final_project/)
